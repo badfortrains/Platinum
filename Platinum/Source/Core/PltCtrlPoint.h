@@ -153,7 +153,7 @@ public:
 protected:
 
     // State Variable Handling
-    virtual NPT_Result DecomposeLastChangeVar(NPT_List<PLT_StateVariable*>& vars);
+    virtual NPT_Result DecomposeLastChangeVar(NPT_List<PLT_StateVariable*>& vars,NPT_String text,PLT_Service* service);
 
     // methods
     virtual NPT_Result Start(PLT_SsdpListenTask* task);

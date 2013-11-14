@@ -671,70 +671,60 @@ PLT_CtrlPoint::SetupResponse(NPT_HttpRequest&              request,
 |   PLT_CtrlPoint::DecomposeLastChangeVar
 +---------------------------------------------------------------------*/
 NPT_Result
-PLT_CtrlPoint::DecomposeLastChangeVar(NPT_List<PLT_StateVariable*>& vars)
+PLT_CtrlPoint::DecomposeLastChangeVar(NPT_List<PLT_StateVariable*>& vars, NPT_String text, PLT_Service* var_service)
 {
-    // parse LastChange var into smaller vars
-    PLT_StateVariable* lastChangeVar = NULL;
-    if (NPT_SUCCEEDED(NPT_ContainerFind(vars, 
-                                        PLT_StateVariableNameFinder("LastChange"), 
-                                        lastChangeVar))) {
-        vars.Remove(lastChangeVar);
-        PLT_Service* var_service = lastChangeVar->GetService();
-        NPT_String text = lastChangeVar->GetValue();
-        
-        NPT_XmlNode* xml = NULL;
-        NPT_XmlParser parser;
-        if (NPT_FAILED(parser.Parse(text, xml)) || !xml || !xml->AsElementNode()) {
-            delete xml;
-            return NPT_ERROR_INVALID_FORMAT;
+    NPT_XmlNode* xml = NULL;
+    NPT_XmlParser parser;
+    if (NPT_FAILED(parser.Parse(text, xml)) || !xml || !xml->AsElementNode()) {
+        delete xml;
+        return NPT_ERROR_INVALID_FORMAT;
+    }
+    
+    NPT_XmlElementNode* node = xml->AsElementNode();
+    if (!node->GetTag().Compare("Event", true)) {
+        // look for the instance with attribute id = 0
+        NPT_XmlElementNode* instance = NULL;
+        for (NPT_Cardinal i=0; i<node->GetChildren().GetItemCount(); i++) {
+            NPT_XmlElementNode* child;
+            if (NPT_FAILED(PLT_XmlHelper::GetChild(node, child, i)))
+                continue;
+            
+            if (!child->GetTag().Compare("InstanceID", true)) {
+                // extract the "val" attribute value
+                NPT_String value;
+                if (NPT_SUCCEEDED(PLT_XmlHelper::GetAttribute(child, "val", value)) &&
+                    !value.Compare("0")) {
+                    instance = child;
+                    break;
+                }
+            }
         }
         
-        NPT_XmlElementNode* node = xml->AsElementNode();
-        if (!node->GetTag().Compare("Event", true)) {
-            // look for the instance with attribute id = 0
-            NPT_XmlElementNode* instance = NULL;
-            for (NPT_Cardinal i=0; i<node->GetChildren().GetItemCount(); i++) {
-                NPT_XmlElementNode* child;
-                if (NPT_FAILED(PLT_XmlHelper::GetChild(node, child, i)))
+        // did we find an instance with id = 0 ?
+        if (instance != NULL) {
+            // all the children of the Instance node are state variables
+            for (NPT_Cardinal j=0; j<instance->GetChildren().GetItemCount(); j++) {
+                NPT_XmlElementNode* var_node;
+                if (NPT_FAILED(PLT_XmlHelper::GetChild(instance, var_node, j)))
                     continue;
                 
-                if (!child->GetTag().Compare("InstanceID", true)) {
-                    // extract the "val" attribute value
-                    NPT_String value;
-                    if (NPT_SUCCEEDED(PLT_XmlHelper::GetAttribute(child, "val", value)) &&
-                        !value.Compare("0")) {
-                        instance = child;
-                        break;
-                    }
-                }
-            }
-            
-            // did we find an instance with id = 0 ?
-            if (instance != NULL) {
-                // all the children of the Instance node are state variables
-                for (NPT_Cardinal j=0; j<instance->GetChildren().GetItemCount(); j++) {
-                    NPT_XmlElementNode* var_node;
-                    if (NPT_FAILED(PLT_XmlHelper::GetChild(instance, var_node, j)))
-                        continue;
-                    
-                    // look for the state variable in this service
-                    const NPT_String* value = var_node->GetAttribute("val");
-                    PLT_StateVariable* var = var_service->FindStateVariable(var_node->GetTag());
-                    if (value != NULL && var != NULL) {
-                        // get the value and set the state variable
-                        // if it succeeded, add it to the list of vars we'll event
-                        if (NPT_SUCCEEDED(var->SetValue(*value))) {
-                            vars.Add(var);
-                            NPT_LOG_FINE_2("LastChange var change for (%s): %s", 
-                                           (const char*)var->GetName(), 
-                                           (const char*)var->GetValue());
-                        }
+                // look for the state variable in this service
+                const NPT_String* value = var_node->GetAttribute("val");
+                PLT_StateVariable* var = var_service->FindStateVariable(var_node->GetTag());
+                if (value != NULL && var != NULL) {
+                    // get the value and set the state variable
+                    // if it succeeded, add it to the list of vars we'll event
+                    if (NPT_SUCCEEDED(var->SetValue(*value))) {
+                        vars.Add(var);
+                        NPT_LOG_FINE_2("LastChange var change for (%s): %s", 
+                                       (const char*)var->GetName(), 
+                                       (const char*)var->GetValue());
                     }
                 }
             }
         }
-        delete xml;
     }
+    delete xml;
 
     return NPT_SUCCESS;
 }
@@ -795,7 +785,12 @@ PLT_CtrlPoint::ProcessEventNotification(PLT_EventSubscriberReference subscriber,
         }
 
         var = service->FindStateVariable(property->GetTag());
-        if (var == NULL) continue;
+        if (strcmp(property->GetTag(),"LastChange") == 0){
+            // Look if a state variable LastChange was received and decompose it into
+            // independent state variable updates     
+            DecomposeLastChangeVar(vars,property->GetText()?*property->GetText():"",service);
+            continue;
+        }else if (var == NULL) continue;
 
         if (NPT_FAILED(var->SetValue(property->GetText()?*property->GetText():""))) {
             NPT_CHECK_LABEL_WARNING(NPT_FAILURE, failure);
@@ -806,10 +801,6 @@ PLT_CtrlPoint::ProcessEventNotification(PLT_EventSubscriberReference subscriber,
 
     // update sequence
     subscriber->SetEventKey(notification->m_EventKey);
-
-    // Look if a state variable LastChange was received and decompose it into
-    // independent state variable updates
-    DecomposeLastChangeVar(vars);
     
     delete xml;
     return NPT_SUCCESS;
